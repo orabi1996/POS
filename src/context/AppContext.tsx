@@ -12,7 +12,7 @@ interface AppContextType {
   isOnline: boolean;
   loading: boolean;
   toasts: Array<{ id: string; type: 'success' | 'error' | 'info' | 'warning'; message: string }>;
-  login: (username: string, password?: string) => Promise<boolean>;
+  login: (username: string, password: string) => Promise<boolean>;
   logout: () => void;
   switchBranch: (branchId: string) => void;
   refreshShift: () => Promise<void>;
@@ -53,19 +53,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     document.documentElement.dir = lang === 'ar' ? 'rtl' : 'ltr';
   };
 
-  // Listen for expired authentication
+  const languageRef = React.useRef(language);
+  useEffect(() => {
+    languageRef.current = language;
+  }, [language]);
+
+  // Listen for expired authentication (registered once)
   useEffect(() => {
     authStorage.onAuthExpired(() => {
       setUser(null);
       setActiveShift(null);
       showToast(
-        language === 'ar'
+        languageRef.current === 'ar'
           ? 'انتهت صلاحية جلسة العمل، يرجى تسجيل الدخول مجدداً'
           : 'Session expired. Please log in again.',
         'warning'
       );
     });
-  }, [language]);
+  }, []);
 
   // Online / Offline listener
   useEffect(() => {
@@ -87,27 +92,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Session restoration and initial config
   useEffect(() => {
-    authStorage.onAuthExpired(() => {
-      setUser(null);
-      setActiveShift(null);
-      showToast(
-        language === 'ar' ? 'انتهت صلاحية الجلسة، يرجى تسجيل الدخول مجدداً' : 'Session expired. Please sign in again.',
-        'warning'
-      );
-    });
-
     const initializeApp = async () => {
       setLoading(true);
       try {
-        // Load Settings
+        // Load Public Settings
         try {
-          const settingsData = await apiClient.get<SystemSettings>('/settings');
+          const settingsData = await apiClient.get<SystemSettings>('/public/settings');
           setSettings(settingsData);
           if (settingsData.defaultLanguage) {
             setLanguage(settingsData.defaultLanguage);
           }
         } catch (e) {
-          console.error('Failed to load settings:', e);
+          console.error('Failed to load public settings:', e);
         }
 
         // Load Branches
@@ -173,7 +169,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [user?.id, branch?.id]);
 
-  const login = async (username: string, password: string = '123456'): Promise<boolean> => {
+  const login = async (username: string, password: string): Promise<boolean> => {
     try {
       const data = await apiClient.post<{
         user: User;

@@ -4,13 +4,14 @@ import { Store, User, Lock, ArrowRight, ArrowLeft, ShieldCheck, KeyRound } from 
 
 export const LoginScreen: React.FC = () => {
   const { login, language, setLanguage } = useApp();
-  const [username, setUsername] = useState('cashier1');
-  const [password, setPassword] = useState('123456');
+  const isDemoMode = import.meta.env.VITE_DEMO_MODE === 'true';
+  const [username, setUsername] = useState(isDemoMode ? 'cashier1' : '');
+  const [password, setPassword] = useState(isDemoMode ? '123456' : '');
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username) return;
+    if (!username || !password) return;
     setLoading(true);
     await login(username, password);
     setLoading(false);
@@ -105,34 +106,36 @@ export const LoginScreen: React.FC = () => {
             )}
           </button>
 
-          {/* Quick Demo Switcher */}
-          <div className="pt-3 border-t border-slate-100">
-            <div className="flex items-center gap-1.5 text-slate-500 text-xs font-bold mb-2">
-              <KeyRound className="w-3.5 h-3.5 text-emerald-600" />
-              <span>{language === 'ar' ? 'اختر حساباً تجريبياً فورياً:' : 'Instant Demo Login:'}</span>
-            </div>
+          {/* Quick Demo Switcher (Only visible in Demo Mode) */}
+          {isDemoMode && (
+            <div className="pt-3 border-t border-slate-100">
+              <div className="flex items-center gap-1.5 text-slate-500 text-xs font-bold mb-2">
+                <KeyRound className="w-3.5 h-3.5 text-emerald-600" />
+                <span>{language === 'ar' ? 'اختر حساباً تجريبياً فورياً:' : 'Instant Demo Login:'}</span>
+              </div>
 
-            <div className="grid grid-cols-1 gap-1.5">
-              {demoAccounts.map((acc) => (
-                <button
-                  key={acc.username}
-                  type="button"
-                  disabled={loading}
-                  onClick={async () => {
-                    setUsername(acc.username);
-                    setPassword('123456');
-                    setLoading(true);
-                    await login(acc.username, '123456');
-                    setLoading(false);
-                  }}
-                  className={`text-start px-3 py-1.5 rounded-lg border text-xs font-semibold flex items-center justify-between transition-all hover:scale-[1.01] ${acc.color}`}
-                >
-                  <span>{language === 'ar' ? acc.roleAr : acc.roleEn}</span>
-                  <span className="font-mono text-[11px] opacity-75">{acc.username}</span>
-                </button>
-              ))}
+              <div className="grid grid-cols-1 gap-1.5">
+                {demoAccounts.map((acc) => (
+                  <button
+                    key={acc.username}
+                    type="button"
+                    disabled={loading}
+                    onClick={async () => {
+                      setUsername(acc.username);
+                      setPassword('123456');
+                      setLoading(true);
+                      await login(acc.username, '123456');
+                      setLoading(false);
+                    }}
+                    className={`text-start px-3 py-1.5 rounded-lg border text-xs font-semibold flex items-center justify-between transition-all hover:scale-[1.01] ${acc.color}`}
+                  >
+                    <span>{language === 'ar' ? acc.roleAr : acc.roleEn}</span>
+                    <span className="font-mono text-[11px] opacity-75">{acc.username}</span>
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
         </form>
 
         <div className="p-3 bg-slate-50 border-t border-slate-100 text-center text-[11px] text-slate-500 font-medium">

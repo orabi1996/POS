@@ -30,24 +30,49 @@ export class ApiError extends Error {
 const TOKEN_KEY = 'pos_auth_token';
 let onAuthExpiredCallback: (() => void) | null = null;
 
+// Migrate from localStorage to sessionStorage once on startup
+function migrateStorageOnce(): void {
+  try {
+    if (typeof window !== 'undefined') {
+      const oldToken = localStorage.getItem(TOKEN_KEY);
+      if (oldToken) {
+        if (!sessionStorage.getItem(TOKEN_KEY)) {
+          sessionStorage.setItem(TOKEN_KEY, oldToken);
+        }
+        localStorage.removeItem(TOKEN_KEY);
+      }
+    }
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+migrateStorageOnce();
+
 export const authStorage = {
   getToken(): string | null {
     try {
-      return localStorage.getItem(TOKEN_KEY);
+      return sessionStorage.getItem(TOKEN_KEY);
     } catch {
       return null;
     }
   },
   setToken(token: string): void {
     try {
-      localStorage.setItem(TOKEN_KEY, token);
+      sessionStorage.setItem(TOKEN_KEY, token);
+      try {
+        localStorage.removeItem(TOKEN_KEY);
+      } catch {}
     } catch {
       // Storage unavailable
     }
   },
   clearToken(): void {
     try {
-      localStorage.removeItem(TOKEN_KEY);
+      sessionStorage.removeItem(TOKEN_KEY);
+      try {
+        localStorage.removeItem(TOKEN_KEY);
+      } catch {}
     } catch {
       // Storage unavailable
     }

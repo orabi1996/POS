@@ -4,6 +4,7 @@ import { calculateSale, RawCheckoutItem } from './saleCalculator.ts';
 import { roundMoney } from '../utils/money.ts';
 import { getBusinessDateTime, DEFAULT_TIMEZONE } from '../utils/businessDate.ts';
 import { AppError } from '../middleware/errorHandler.ts';
+import { hasPermission } from '../middleware/permissions.ts';
 
 export interface CheckoutInput {
   clientOperationId?: string;
@@ -189,24 +190,39 @@ export async function processCheckout(
     });
 
     // 7. Discount Permissions Check
-    const maxAllowedDiscountPercent = Number(
-      user.maxDiscountPercent ??
-      (user.role === 'Cashier'
-        ? settings.maxCashierDiscountPercent
-        : settings.maxManagerDiscountPercent ?? 100)
-    );
+    const hasDiscount = calculation.discount > 0.001;
+    if (hasDiscount) {
+      if (!hasPermission(user.role, 'POS_DISCOUNT')) {
+        throw new AppError({
+          statusCode: 403,
+          code: 'DISCOUNT_PERMISSION_DENIED',
+          message: 'You do not have permission to apply discounts',
+          messageAr: 'عفواً، ليس لديك صلاحية تطبيق خصومات على الفاتورة',
+        });
+      }
 
-    const calculatedDiscountPercent = calculation.subtotal > 0
-      ? (calculation.discount / calculation.subtotal) * 100
-      : 0;
+      const maxAllowedDiscountPercent = Number(
+        user.maxDiscountPercent ??
+        (user.role === 'Cashier'
+          ? settings.maxCashierDiscountPercent
+          : settings.maxManagerDiscountPercent ?? 100)
+      );
 
-    if (calculatedDiscountPercent > maxAllowedDiscountPercent + 0.001) {
-      throw new AppError({
-        statusCode: 403,
-        code: 'DISCOUNT_LIMIT_EXCEEDED',
-        message: `Discount of ${roundMoney(calculatedDiscountPercent)}% exceeds your maximum allowed discount of ${maxAllowedDiscountPercent}%`,
-        messageAr: `نسبة الخصم (${roundMoney(calculatedDiscountPercent)}%) تتجاوز الحد الأقصى المسموح لك (${maxAllowedDiscountPercent}%)`,
-      });
+      const calculatedDiscountPercent = calculation.subtotal > 0
+        ? (calculation.discount / calculation.subtotal) * 100
+        : 0;
+
+      if (calculatedDiscountPercent > maxAllowedDiscountPercent + 0.001) {
+        const canOverride = hasPermission(user.role, 'POS_OVERRIDE_DISCOUNT');
+        if (!canOverride) {
+          throw new AppError({
+            statusCode: 403,
+            code: 'DISCOUNT_LIMIT_EXCEEDED',
+            message: `Discount of ${roundMoney(calculatedDiscountPercent)}% exceeds your maximum allowed discount of ${maxAllowedDiscountPercent}%. Supervisor authorization required.`,
+            messageAr: `نسبة الخصم (${roundMoney(calculatedDiscountPercent)}%) تتجاوز الحد الأقصى المسموح لك (${maxAllowedDiscountPercent}%). يتطلب تصريح مشرف.`,
+          });
+        }
+      }
     }
 
     // 8. Payments Validation
