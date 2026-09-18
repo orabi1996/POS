@@ -2,6 +2,7 @@ import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { apiRouter } from './server/api.ts';
+import { errorHandler } from './server/middleware/errorHandler.ts';
 
 async function startServer() {
   const app = express();
@@ -10,23 +11,38 @@ async function startServer() {
   // JSON Body Parser with reasonable limits
   app.use(express.json({ limit: '10mb' }));
 
-  // API routes FIRST
-  app.use('/api', apiRouter);
-
   // Health check
   app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', time: new Date().toISOString() });
   });
 
+  // API routes FIRST
+  app.use('/api', apiRouter);
+
+  // Centralized Error Handler for API
+  app.use('/api', errorHandler);
+
   // Catch-all 404 for unhandled API routes (ensures API callers never receive HTML)
   app.all('/api/*', (req, res) => {
-    res.status(404).json({ error: 'API route not found', path: req.originalUrl });
+    res.status(404).json({
+      success: false,
+      error: {
+        code: 'NOT_FOUND',
+        message: 'API route not found',
+        messageAr: 'نقطة النهاية المطلوبة غير موجودة',
+        path: req.originalUrl,
+      },
+    });
   });
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
+    const isDisableHmr = process.env.DISABLE_HMR === 'true';
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        ...(isDisableHmr ? { hmr: false, watch: null } : {}),
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);

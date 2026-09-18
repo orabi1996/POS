@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext.tsx';
 import { Shift } from '../../types/index.ts';
+import { apiClient } from '../../services/apiClient.ts';
 import { Clock, Plus, CheckCircle2, AlertTriangle, User, Banknote } from 'lucide-react';
 
 export const ShiftsScreen: React.FC<{ onOpenShiftModal: () => void }> = ({ onOpenShiftModal }) => {
@@ -10,12 +11,9 @@ export const ShiftsScreen: React.FC<{ onOpenShiftModal: () => void }> = ({ onOpe
 
   const loadShifts = () => {
     if (!branch) return;
-    fetch(`/api/shifts?branchId=${branch.id}`)
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
-      })
-      .then((data) => setShifts(data))
+    apiClient
+      .get<Shift[]>(`/shifts?branchId=${branch.id}`)
+      .then((data) => setShifts(data || []))
       .catch((err) => console.error(err));
   };
 

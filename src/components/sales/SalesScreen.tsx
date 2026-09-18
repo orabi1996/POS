@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext.tsx';
 import { SaleInvoice } from '../../types/index.ts';
+import { apiClient, ApiError } from '../../services/apiClient.ts';
 import { ThermalReceiptModal } from '../pos/ThermalReceiptModal.tsx';
 import {
   Receipt,
@@ -33,12 +34,9 @@ export const SalesScreen: React.FC = () => {
   const loadInvoices = () => {
     if (!branch) return;
     setLoading(true);
-    fetch(`/api/sales?branchId=${branch.id}&search=${encodeURIComponent(search)}&status=${statusFilter}`)
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
-      })
-      .then((data) => setInvoices(data))
+    apiClient
+      .get<SaleInvoice[]>(`/sales?branchId=${branch.id}&search=${encodeURIComponent(search)}&status=${statusFilter}`)
+      .then((data) => setInvoices(data || []))
       .catch((err) => console.error(err))
       .finally(() => setLoading(false));
   };
@@ -61,25 +59,18 @@ export const SalesScreen: React.FC = () => {
     if (!selectedInvoice || !user) return;
     setCancelling(true);
     try {
-      const res = await fetch(`/api/sales/${selectedInvoice.id}/cancel`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          reason: cancelReason,
-          userId: user.id,
-          userName: user.nameAr,
-        }),
+      await apiClient.post(`/sales/${selectedInvoice.id}/cancel`, {
+        reason: cancelReason,
+        userId: user.id,
+        userName: user.nameAr,
       });
-      const data = await res.json();
-      if (res.ok) {
-        showToast(language === 'ar' ? 'تم إلغاء الفاتورة وإرجاع الأصناف للمخزن' : 'Invoice cancelled', 'success');
-        setShowCancelModal(false);
-        loadInvoices();
-      } else {
-        showToast(data.messageAr || 'حدث خطأ', 'error');
-      }
-    } catch (err) {
-      showToast('Error cancelling invoice', 'error');
+
+      showToast(language === 'ar' ? 'تم إلغاء الفاتورة وإرجاع الأصناف للمخزن' : 'Invoice cancelled', 'success');
+      setShowCancelModal(false);
+      loadInvoices();
+    } catch (err: any) {
+      const msg = err instanceof ApiError ? err.messageAr : 'حدث خطأ أثناء إلغاء الفاتورة';
+      showToast(msg, 'error');
     } finally {
       setCancelling(false);
     }

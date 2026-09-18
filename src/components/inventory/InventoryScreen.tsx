@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext.tsx';
 import { Product, InventoryMovement } from '../../types/index.ts';
+import { apiClient, ApiError } from '../../services/apiClient.ts';
 import { Boxes, Plus, Search, Filter, History, AlertCircle, ArrowUpRight, ArrowDownLeft, X } from 'lucide-react';
 
 export const InventoryScreen: React.FC = () => {
@@ -21,14 +22,11 @@ export const InventoryScreen: React.FC = () => {
   const loadData = () => {
     if (!branch) return;
     setLoading(true);
-    fetch(`/api/products?branchId=${branch.id}&search=${encodeURIComponent(search)}`)
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
-      })
+    apiClient
+      .get<Product[]>(`/products?branchId=${branch.id}&search=${encodeURIComponent(search)}`)
       .then((data: Product[]) => {
-        setProducts(data);
-        if (data.length > 0 && !selectedProductId) {
+        setProducts(data || []);
+        if (data && data.length > 0 && !selectedProductId) {
           setSelectedProductId(data[0].id);
           setActualStock(data[0].stock || 0);
         }
@@ -36,12 +34,9 @@ export const InventoryScreen: React.FC = () => {
       .catch((err) => console.error(err))
       .finally(() => setLoading(false));
 
-    fetch(`/api/inventory/movements?branchId=${branch.id}`)
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
-      })
-      .then((data) => setMovements(data))
+    apiClient
+      .get<InventoryMovement[]>(`/inventory/movements?branchId=${branch.id}`)
+      .then((data) => setMovements(data || []))
       .catch((err) => console.error(err));
   };
 
@@ -64,35 +59,27 @@ export const InventoryScreen: React.FC = () => {
     if (!selectedProduct || !branch || !user) return;
 
     try {
-      const res = await fetch('/api/inventory/adjust', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          productId: selectedProduct.id,
-          productNameAr: selectedProduct.nameAr,
-          branchId: branch.id,
-          expectedStock: currentExpectedStock,
-          actualStock: Number(actualStock),
-          difference,
-          reason,
-          userId: user.id,
-          userName: user.nameAr,
-        }),
+      await apiClient.post('/inventory/adjust', {
+        productId: selectedProduct.id,
+        productNameAr: selectedProduct.nameAr,
+        branchId: branch.id,
+        expectedStock: currentExpectedStock,
+        actualStock: Number(actualStock),
+        difference,
+        reason,
+        userId: user.id,
+        userName: user.nameAr,
       });
 
-      const data = await res.json();
-      if (res.ok) {
-        showToast(
-          language === 'ar' ? 'تمت التسوية الجردية وتحديث المخزون بنجاح' : 'Stock adjusted successfully',
-          'success'
-        );
-        setShowAdjustModal(false);
-        loadData();
-      } else {
-        showToast(data.messageAr || 'حدث خطأ', 'error');
-      }
-    } catch (err) {
-      showToast('Error adjusting stock', 'error');
+      showToast(
+        language === 'ar' ? 'تمت التسوية الجردية وتحديث المخزون بنجاح' : 'Stock adjusted successfully',
+        'success'
+      );
+      setShowAdjustModal(false);
+      loadData();
+    } catch (err: any) {
+      const msg = err instanceof ApiError ? err.messageAr : 'حدث خطأ في التسوية الجردية';
+      showToast(msg, 'error');
     }
   };
 

@@ -1,5 +1,7 @@
 import fs from 'fs';
 import path from 'path';
+import { hashPassword } from './config/auth.ts';
+import { DEFAULT_TIMEZONE, getBusinessDate } from './utils/businessDate.ts';
 import {
   User,
   Branch,
@@ -18,8 +20,12 @@ import {
   SystemSettings,
 } from '../src/types/index.ts';
 
+export interface UserRecord extends User {
+  passwordHash?: string;
+}
+
 interface StoreData {
-  users: User[];
+  users: UserRecord[];
   branches: Branch[];
   registers: Register[];
   categories: Category[];
@@ -124,7 +130,9 @@ const SEED_REGISTERS: Register[] = [
   },
 ];
 
-const SEED_USERS: User[] = [
+const SEED_PASSWORD_HASH = hashPassword('123456');
+
+const SEED_USERS: UserRecord[] = [
   {
     id: 'usr_admin',
     username: 'admin',
@@ -135,6 +143,7 @@ const SEED_USERS: User[] = [
     status: 'active',
     email: 'admin@smartmarket.pos',
     maxDiscountPercent: 100,
+    passwordHash: SEED_PASSWORD_HASH,
   },
   {
     id: 'usr_manager',
@@ -146,6 +155,7 @@ const SEED_USERS: User[] = [
     status: 'active',
     email: 'manager@smartmarket.pos',
     maxDiscountPercent: 20,
+    passwordHash: SEED_PASSWORD_HASH,
   },
   {
     id: 'usr_cashier1',
@@ -157,6 +167,7 @@ const SEED_USERS: User[] = [
     status: 'active',
     email: 'cashier1@smartmarket.pos',
     maxDiscountPercent: 5,
+    passwordHash: SEED_PASSWORD_HASH,
   },
   {
     id: 'usr_inventory',
@@ -168,6 +179,7 @@ const SEED_USERS: User[] = [
     status: 'active',
     email: 'inventory@smartmarket.pos',
     maxDiscountPercent: 0,
+    passwordHash: SEED_PASSWORD_HASH,
   },
   {
     id: 'usr_accountant',
@@ -179,6 +191,7 @@ const SEED_USERS: User[] = [
     status: 'active',
     email: 'accountant@smartmarket.pos',
     maxDiscountPercent: 10,
+    passwordHash: SEED_PASSWORD_HASH,
   },
 ];
 
@@ -244,6 +257,10 @@ const SEED_SUPPLIERS: Supplier[] = [
 class DatabaseService {
   private data: StoreData;
   private isSaving: boolean = false;
+  // Temporary In-Memory Development Persistence Layer (to be migrated to Firestore in Phase 3)
+  private inTransaction: boolean = false;
+  private mutexQueue: Promise<void> = Promise.resolve();
+  private idempotencyStore: Map<string, any> = new Map();
 
   constructor() {
     this.data = this.loadData();
@@ -257,7 +274,15 @@ class DatabaseService {
 
       if (fs.existsSync(DATA_FILE)) {
         const raw = fs.readFileSync(DATA_FILE, 'utf-8');
-        return JSON.parse(raw);
+        const parsed: StoreData = JSON.parse(raw);
+        // Ensure all users have passwordHash (development migration fallback)
+        parsed.users = (parsed.users || []).map((u) => {
+          if (!u.passwordHash) {
+            u.passwordHash = SEED_PASSWORD_HASH;
+          }
+          return u;
+        });
+        return parsed;
       }
     } catch (err) {
       console.error('Error loading store.json, initializing fresh store:', err);
@@ -404,7 +429,7 @@ class DatabaseService {
   }
 
   public save(): void {
-    if (this.isSaving) return;
+    if (this.isSaving || this.inTransaction) return;
     this.isSaving = true;
     try {
       if (!fs.existsSync(DATA_DIR)) {
@@ -420,8 +445,93 @@ class DatabaseService {
     }
   }
 
-  // Getters
-  public getUsers(): User[] { return this.data.users; }
+  /**
+   * Concurrency Lock: Serializes critical write operations (checkout, stock adjustments, shifts)
+   */
+  public async runWithLock<T>(fn: () => Promise<T> | T): Promise<T> {
+    const prev = this.mutexQueue;
+    let release: () => void;
+    this.mutexQueue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await prev;
+    try {
+      return await fn();
+    } finally {
+      release!();
+    }
+  }
+
+  /**
+   * Atomic In-Memory Transaction with Snapshot Rollback
+   */
+  public runTransaction<T>(work: () => T): T {
+    const snapshot = JSON.parse(JSON.stringify(this.data));
+    this.inTransaction = true;
+    try {
+      const result = work();
+      this.inTransaction = false;
+      this.save();
+      return result;
+    } catch (err) {
+      this.data = snapshot;
+      this.inTransaction = false;
+      throw err;
+    }
+  }
+
+  /**
+   * Idempotency Management (prevents double checkouts / duplicate operations)
+   */
+  public getProcessedOperation(id: string): any {
+    if (!id) return null;
+    return this.idempotencyStore.get(id) || null;
+  }
+
+  public setProcessedOperation(id: string, result: any): void {
+    if (!id) return;
+    this.idempotencyStore.set(id, result);
+    // Keep max 2000 operation records in memory
+    if (this.idempotencyStore.size > 2000) {
+      const firstKey = this.idempotencyStore.keys().next().value;
+      if (firstKey) this.idempotencyStore.delete(firstKey);
+    }
+  }
+
+  /**
+   * Non-duplicating sequence generator for Invoice Numbers per branch per business day
+   */
+  public getNextInvoiceNumber(branchId: string, timeZone: string = DEFAULT_TIMEZONE): string {
+    const bDate = getBusinessDate(timeZone).replace(/-/g, '');
+    const prefix = `${branchId}-${bDate}`;
+    const todaySales = this.data.sales.filter(
+      (s) => s.invoiceNumber && s.invoiceNumber.startsWith(prefix)
+    );
+    const seq = (todaySales.length + 1).toString().padStart(6, '0');
+    return `${prefix}-${seq}`;
+  }
+
+  /**
+   * Internal lookup that includes passwordHash for authentication check
+   */
+  public findUserForAuth(username: string): UserRecord | undefined {
+    return this.data.users.find(
+      (u) => u.username.toLowerCase() === (username || '').trim().toLowerCase()
+    );
+  }
+
+  // Getters (Safe user records without passwordHash)
+  public getUsers(): User[] {
+    return this.data.users.map(({ passwordHash, ...safeUser }) => safeUser);
+  }
+
+  public getUserById(id: string): User | undefined {
+    const u = this.data.users.find((user) => user.id === id);
+    if (!u) return undefined;
+    const { passwordHash, ...safeUser } = u;
+    return safeUser;
+  }
+
   public getBranches(): Branch[] { return this.data.branches; }
   public getRegisters(): Register[] { return this.data.registers; }
   public getCategories(): Category[] { return this.data.categories; }
@@ -444,7 +554,7 @@ class DatabaseService {
     return this.data.settings;
   }
 
-  public logAudit(log: Omit<AuditLog, 'id' | 'timestamp'>): void {
+  public logAudit(log: Omit<AuditLog, 'id' | 'timestamp'>, autoSave: boolean = true): void {
     const auditRecord: AuditLog = {
       id: `audit_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
       timestamp: new Date().toISOString(),
@@ -455,7 +565,9 @@ class DatabaseService {
     if (this.data.auditLogs.length > 500) {
       this.data.auditLogs = this.data.auditLogs.slice(0, 500);
     }
-    this.save();
+    if (autoSave && !this.inTransaction) {
+      this.save();
+    }
   }
 
   public getProductStock(productId: string, branchId: string): number {
@@ -474,7 +586,8 @@ class DatabaseService {
     refId: string,
     userId: string,
     userName: string,
-    notes?: string
+    notes?: string,
+    autoSave: boolean = true
   ): void {
     let bal = this.data.inventoryBalances.find(
       (b) => b.productId === productId && b.branchId === branchId
@@ -519,7 +632,9 @@ class DatabaseService {
     };
 
     this.data.inventoryTransactions.unshift(tx);
-    this.save();
+    if (autoSave && !this.inTransaction) {
+      this.save();
+    }
   }
 }
 

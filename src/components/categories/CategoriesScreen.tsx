@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext.tsx';
 import { Category } from '../../types/index.ts';
+import { apiClient, ApiError } from '../../services/apiClient.ts';
 import { Tags, Plus, Package, X } from 'lucide-react';
 
 export const CategoriesScreen: React.FC = () => {
@@ -12,9 +13,9 @@ export const CategoriesScreen: React.FC = () => {
   const [code, setCode] = useState<string>('');
 
   const loadCategories = () => {
-    fetch('/api/categories')
-      .then((res) => res.json())
-      .then((data) => setCategories(data))
+    apiClient
+      .get<Category[]>('/categories')
+      .then((data) => setCategories(data || []))
       .catch((err) => console.error(err));
   };
 
@@ -27,28 +28,20 @@ export const CategoriesScreen: React.FC = () => {
     if (!nameAr || !nameEn) return;
 
     try {
-      const res = await fetch('/api/categories', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          nameAr,
-          nameEn,
-          code: code || nameEn.toUpperCase().slice(0, 4),
-        }),
+      await apiClient.post('/categories', {
+        nameAr,
+        nameEn,
+        code: code || nameEn.toUpperCase().slice(0, 4),
       });
-      const data = await res.json();
-      if (res.ok) {
-        showToast(language === 'ar' ? 'تمت إضافة التصنيف بنجاح' : 'Category created', 'success');
-        setShowModal(false);
-        setNameAr('');
-        setNameEn('');
-        setCode('');
-        loadCategories();
-      } else {
-        showToast(data.messageAr || 'حدث خطأ', 'error');
-      }
-    } catch (err) {
-      showToast('Error creating category', 'error');
+      showToast(language === 'ar' ? 'تمت إضافة التصنيف بنجاح' : 'Category created', 'success');
+      setShowModal(false);
+      setNameAr('');
+      setNameEn('');
+      setCode('');
+      loadCategories();
+    } catch (err: any) {
+      const msg = err instanceof ApiError ? err.messageAr : 'حدث خطأ أثناء حفظ التصنيف';
+      showToast(msg, 'error');
     }
   };
 

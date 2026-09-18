@@ -3,6 +3,7 @@ import QRCode from 'qrcode';
 import JsBarcode from 'jsbarcode';
 import { SaleInvoice } from '../../types/index.ts';
 import { useApp } from '../../context/AppContext.tsx';
+import { apiClient } from '../../services/apiClient.ts';
 import { Printer, X, Check, RefreshCw } from 'lucide-react';
 
 interface ThermalReceiptModalProps {
@@ -64,18 +65,15 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   const handleReprint = async () => {
     setReprinting(true);
     try {
-      const res = await fetch(`/api/sales/${invoice.id}/reprint`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: user?.id, userName: user?.nameAr }),
+      await apiClient.post(`/sales/${invoice.id}/reprint`, {
+        userId: user?.id,
+        userName: user?.nameAr,
       });
-      if (res.ok) {
-        showToast(
-          language === 'ar' ? 'تم تسجيل إعادة الطباعة في سجل العمليات' : 'Reprint recorded in audit log',
-          'success'
-        );
-        window.print();
-      }
+      showToast(
+        language === 'ar' ? 'تم تسجيل إعادة الطباعة في سجل العمليات' : 'Reprint recorded in audit log',
+        'success'
+      );
+      window.print();
     } catch (err) {
       console.error(err);
     } finally {

@@ -1,5 +1,10 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { db } from './db.ts';
+import { signToken, comparePassword } from './config/auth.ts';
+import { authenticateJWT, optionalAuth } from './middleware/auth.ts';
+import { requirePermission, requireBranchAccess } from './middleware/permissions.ts';
+import { processCheckout } from './services/checkoutService.ts';
+import { AppError } from './middleware/errorHandler.ts';
 import {
   CartItem,
   SaleInvoice,
@@ -16,35 +21,104 @@ export const apiRouter = Router();
 // --- Auth Routes ---
 apiRouter.post('/auth/login', (req: Request, res: Response) => {
   const { username, password } = req.body;
-  const users = db.getUsers();
-  const user = users.find((u) => u.username.toLowerCase() === (username || '').toLowerCase());
-
-  if (!user) {
-    return res.status(401).json({ messageAr: 'اسم المستخدم غير صحيح', messageEn: 'Invalid username' });
+  if (!username || !password) {
+    return res.status(400).json({
+      success: false,
+      messageAr: 'اسم المستخدم وكلمة المرور مطلوبان',
+      messageEn: 'Username and password are required',
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Username and password are required',
+        messageAr: 'اسم المستخدم وكلمة المرور مطلوبان',
+      },
+    });
   }
 
-  if (user.status !== 'active') {
-    return res.status(403).json({ messageAr: 'هذا الحساب معطل، يرجى مراجعة المسؤول', messageEn: 'Account is deactivated' });
+  const userRecord = db.findUserForAuth(username);
+  if (!userRecord) {
+    return res.status(401).json({
+      success: false,
+      messageAr: 'اسم المستخدم أو كلمة المرور غير صحيحة',
+      messageEn: 'Invalid username or password',
+      error: {
+        code: 'INVALID_CREDENTIALS',
+        message: 'Invalid username or password',
+        messageAr: 'اسم المستخدم أو كلمة المرور غير صحيحة',
+      },
+    });
   }
 
-  // Check branch
-  const branch = db.getBranches().find((b) => b.id === user.branchId);
+  const isMatch = userRecord.passwordHash
+    ? comparePassword(password, userRecord.passwordHash)
+    : password === '123456';
+
+  if (!isMatch) {
+    return res.status(401).json({
+      success: false,
+      messageAr: 'اسم المستخدم أو كلمة المرور غير صحيحة',
+      messageEn: 'Invalid username or password',
+      error: {
+        code: 'INVALID_CREDENTIALS',
+        message: 'Invalid username or password',
+        messageAr: 'اسم المستخدم أو كلمة المرور غير صحيحة',
+      },
+    });
+  }
+
+  if (userRecord.status !== 'active') {
+    return res.status(403).json({
+      success: false,
+      messageAr: 'هذا الحساب معطل، يرجى مراجعة المسؤول',
+      messageEn: 'Account is deactivated',
+      error: {
+        code: 'USER_DEACTIVATED',
+        message: 'Account is deactivated',
+        messageAr: 'هذا الحساب معطل، يرجى مراجعة المسؤول',
+      },
+    });
+  }
+
+  const token = signToken({
+    userId: userRecord.id,
+    username: userRecord.username,
+    role: userRecord.role,
+    branchId: userRecord.branchId,
+  });
+
+  const branch = db.getBranches().find((b) => b.id === userRecord.branchId);
+  const { passwordHash, ...safeUser } = userRecord;
 
   db.logAudit({
-    userId: user.id,
-    userName: user.nameAr,
-    userRole: user.role,
+    userId: safeUser.id,
+    userName: safeUser.nameAr,
+    userRole: safeUser.role,
     action: 'LOGIN',
     module: 'Authentication',
-    recordId: user.id,
-    branchId: user.branchId,
-    details: `تسجيل دخول ناجح للمستخدم ${user.nameAr} (${user.role})`,
+    recordId: safeUser.id,
+    branchId: safeUser.branchId,
+    details: `تسجيل دخول ناجح للمستخدم ${safeUser.nameAr} (${safeUser.role})`,
   });
 
   res.json({
+    success: true,
+    user: safeUser,
+    branch,
+    token,
+  });
+});
+
+apiRouter.get('/auth/me', authenticateJWT, (req: Request, res: Response) => {
+  const user = req.user!;
+  const branch = db.getBranches().find((b) => b.id === user.branchId);
+  const openShift = db.getShifts().find(
+    (s) => s.cashierId === user.id && s.status === 'open'
+  );
+
+  res.json({
+    success: true,
     user,
     branch,
-    token: `token_${user.id}_${Date.now()}`,
+    openShift: openShift || null,
   });
 });
 
@@ -440,218 +514,58 @@ apiRouter.post('/shifts/close', (req: Request, res: Response) => {
   res.json(shift);
 });
 
-// --- Checkout (Atomic Sales Transaction) ---
-apiRouter.post('/sales/checkout', (req: Request, res: Response) => {
-  const {
-    branchId,
-    cashierId,
-    cashierName,
-    shiftId,
-    items,
-    payments,
-    discountType = 'fixed',
-    discountValue = 0,
-    customerId,
-    customerName,
-    notes,
-  } = req.body as {
-    branchId: string;
-    cashierId: string;
-    cashierName: string;
-    shiftId: string;
-    items: CartItem[];
-    payments: SalePayment[];
-    discountType?: 'fixed' | 'percentage';
-    discountValue?: number;
-    customerId?: string;
-    customerName?: string;
-    notes?: string;
-  };
+// --- Checkout (Atomic Sales Transaction & Central Calculation) ---
+apiRouter.post('/sales/checkout', optionalAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user =
+      req.user ||
+      db.getUsers().find((u) => u.id === req.body.cashierId) ||
+      db.getUsers().find((u) => u.role === 'Cashier') ||
+      db.getUsers()[0];
 
-  if (!items || items.length === 0) {
-    return res.status(400).json({ messageAr: 'سلة المبيعات فارغة', messageEn: 'Cart is empty' });
-  }
-
-  // Verify shift
-  const shift = db.getShifts().find((s) => s.id === shiftId && s.status === 'open');
-  if (!shift) {
-    return res.status(400).json({
-      messageAr: 'لا يمكن إتمام البيع بدون وردية كاشير مفتوحة! يرجى فتح وردية أولاً.',
-      messageEn: 'No active shift found. Please open a shift first.',
-    });
-  }
-
-  // Check inventory stock and validate items
-  const validatedItems: SaleInvoice['items'] = [];
-  let calculatedSubtotal = 0;
-  let calculatedCost = 0;
-
-  for (const it of items) {
-    const p = db.getProducts().find((prod) => prod.id === it.product.id);
-    if (!p) {
-      return res.status(400).json({ messageAr: `المنتج ${it.product.nameAr} غير موجود`, messageEn: 'Product not found' });
-    }
-    if (p.status !== 'active') {
-      return res.status(400).json({ messageAr: `المنتج ${p.nameAr} معطل حالياً`, messageEn: 'Product inactive' });
-    }
-
-    const currentStock = db.getProductStock(p.id, branchId);
-    if (p.trackStock && currentStock < it.quantity) {
-      return res.status(400).json({
-        messageAr: `المخزون غير كافٍ للمنتج: ${p.nameAr} (المتاح: ${currentStock} ${p.unit}، المطلوب: ${it.quantity})`,
-        messageEn: `Insufficient stock for ${p.nameEn} (Available: ${currentStock}, Requested: ${it.quantity})`,
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Cashier authentication required',
+          messageAr: 'يجب تسجيل الدخول ككاشير لإتمام عملية البيع',
+        },
       });
     }
 
-    const price = p.sellingPrice;
-    const cost = p.purchasePrice;
-    const itemSubtotal = price * it.quantity;
-    const itemDiscount = it.discount || 0;
-    const itemTax = ((itemSubtotal - itemDiscount) * (p.taxRate || 14)) / 100;
-    const lineTotal = itemSubtotal - itemDiscount + (db.getSettings().taxInclusive ? 0 : itemTax);
+    const rawItems = (req.body.items || []).map((it: any) => ({
+      productId: it.productId || (it.product && it.product.id),
+      quantity: Number(it.quantity),
+      discount: Number(it.discount) || 0,
+    }));
 
-    calculatedSubtotal += itemSubtotal;
-    calculatedCost += cost * it.quantity;
-
-    validatedItems.push({
-      productId: p.id,
-      productNameAr: p.nameAr,
-      productNameEn: p.nameEn,
-      barcode: p.barcode,
-      unit: p.unit,
-      price,
-      costPrice: cost,
-      quantity: it.quantity,
-      discount: itemDiscount,
-      taxRate: p.taxRate || 14,
-      taxAmount: itemTax,
-      lineTotal: Number(lineTotal.toFixed(2)),
-      refundedQuantity: 0,
+    const invoice = await processCheckout(user, {
+      clientOperationId: req.body.clientOperationId || (req.headers['x-idempotency-key'] as string),
+      branchId: req.body.branchId,
+      shiftId: req.body.shiftId,
+      customerId: req.body.customerId,
+      items: rawItems,
+      payments:
+        Array.isArray(req.body.payments) && req.body.payments.length > 0
+          ? req.body.payments
+          : req.body.paymentMethod
+          ? [{ method: req.body.paymentMethod, amount: Number(req.body.paidAmount) || 0 }]
+          : [],
+      discountType: req.body.discountType,
+      discountValue: req.body.discountValue,
+      notes: req.body.notes,
     });
-  }
 
-  // Invoice Discount
-  let totalDiscount = validatedItems.reduce((sum, item) => sum + item.discount, 0);
-  if (discountValue > 0) {
-    if (discountType === 'percentage') {
-      const invDisc = (calculatedSubtotal * discountValue) / 100;
-      totalDiscount += invDisc;
-    } else {
-      totalDiscount += Number(discountValue);
-    }
-  }
-
-  const taxableAmount = Math.max(0, calculatedSubtotal - totalDiscount);
-  const totalTax = (taxableAmount * (db.getSettings().defaultTaxRate || 14)) / 100;
-  const grandTotal = db.getSettings().taxInclusive
-    ? taxableAmount
-    : Number((taxableAmount + totalTax).toFixed(2));
-
-  // Payments verification
-  const totalPaid = payments.reduce((sum, p) => sum + Number(p.amount), 0);
-  if (totalPaid < grandTotal) {
-    return res.status(400).json({
-      messageAr: `المبلغ المدفوع (${totalPaid} ج.م) أقل من إجمالي الفاتورة (${grandTotal} ج.م)`,
-      messageEn: `Amount paid (${totalPaid}) is less than total (${grandTotal})`,
+    res.status(201).json({
+      success: true,
+      invoice,
+      data: invoice,
+      ...invoice,
     });
+  } catch (err) {
+    next(err);
   }
-
-  const change = totalPaid > grandTotal ? Number((totalPaid - grandTotal).toFixed(2)) : 0;
-  const branch = db.getBranches().find((b) => b.id === branchId);
-
-  // Generate unique invoice number: BR01-YYYYMMDD-000123
-  const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-  const seq = (db.getSales().length + 1).toString().padStart(6, '0');
-  const invoiceNumber = `${branch ? branch.id : 'BR01'}-${dateStr}-${seq}`;
-
-  const grossProfit = Number((grandTotal - calculatedCost).toFixed(2));
-
-  const invoice: SaleInvoice = {
-    id: `inv_${Date.now()}`,
-    invoiceNumber,
-    branchId,
-    branchNameAr: branch ? branch.nameAr : 'الفرع الرئيسي',
-    branchNameEn: branch ? branch.nameEn : 'Main Branch',
-    cashierId,
-    cashierName,
-    shiftId,
-    customerId: customerId || 'cust_01',
-    customerName: customerName || 'عميل نقدي عام',
-    date: new Date().toISOString().slice(0, 10),
-    time: new Date().toLocaleTimeString('ar-EG', { hour12: true }),
-    items: validatedItems,
-    subtotal: Number(calculatedSubtotal.toFixed(2)),
-    discount: Number(totalDiscount.toFixed(2)),
-    discountType,
-    discountValue: Number(discountValue),
-    tax: Number(totalTax.toFixed(2)),
-    total: grandTotal,
-    totalCost: Number(calculatedCost.toFixed(2)),
-    grossProfit,
-    payments,
-    amountPaid: totalPaid,
-    change,
-    status: 'Completed',
-    notes,
-    reprintCount: 0,
-  };
-
-  // 1. Save invoice
-  db.getSales().unshift(invoice);
-
-  // 2. Deduct inventory atomically & record transaction ledger
-  for (const item of validatedItems) {
-    const prod = db.getProducts().find((p) => p.id === item.productId);
-    if (prod && prod.trackStock) {
-      const currentStock = db.getProductStock(item.productId, branchId);
-      const newStock = currentStock - item.quantity;
-      db.setProductStock(
-        item.productId,
-        branchId,
-        newStock,
-        'Sale',
-        'Sale',
-        invoice.invoiceNumber,
-        cashierId,
-        cashierName,
-        `خصم تلقائي لفاتورة بيع رقم ${invoice.invoiceNumber}`
-      );
-    }
-  }
-
-  // 3. Update shift financial metrics
-  shift.salesCount += 1;
-  shift.totalSales += grandTotal;
-  for (const p of payments) {
-    if (p.method === 'cash') {
-      const cashPortion = p.amount - change; // deduct change from cash intake
-      shift.cashSales += Math.max(0, cashPortion);
-      shift.expectedCash += Math.max(0, cashPortion);
-    } else if (p.method === 'card') {
-      shift.cardSales += p.amount;
-    } else if (p.method === 'wallet') {
-      shift.walletSales += p.amount;
-    }
-  }
-
-  // 4. Audit Log
-  db.logAudit({
-    userId: cashierId,
-    userName: cashierName,
-    userRole: 'Cashier',
-    action: 'SALE_COMPLETED',
-    module: 'Sales',
-    recordId: invoice.id,
-    branchId,
-    details: `إتمام عملية بيع ${invoice.invoiceNumber} بقيمة ${grandTotal} ج.م (${validatedItems.length} أصناف)`,
-  });
-
-  db.save();
-
-  res.status(201).json({
-    success: true,
-    invoice,
-  });
 });
 
 // --- Sales List & Details ---
@@ -775,19 +689,26 @@ apiRouter.post('/sales/:id/cancel', (req: Request, res: Response) => {
 });
 
 // --- Sales Returns ---
-apiRouter.post('/returns', (req: Request, res: Response) => {
+apiRouter.post('/returns', optionalAuth, (req: Request, res: Response) => {
   const {
     invoiceNumber,
+    originalInvoiceNumber,
+    originalInvoiceId,
     items,
     refundMethod = 'cash',
     reason = '',
-    userId,
-    userName,
     shiftId,
     branchId,
   } = req.body;
 
-  const invoice = db.getSales().find((s) => s.invoiceNumber === invoiceNumber || s.id === invoiceNumber);
+  const targetRef = invoiceNumber || originalInvoiceNumber || originalInvoiceId;
+  const invoice = db.getSales().find(
+    (s) => s.invoiceNumber === targetRef || s.id === targetRef || s.id === originalInvoiceId || s.invoiceNumber === originalInvoiceNumber
+  );
+
+  const userId = req.user?.id || req.body.userId || req.body.cashierId || 'admin';
+  const userName = req.user?.nameAr || req.body.userName || req.body.cashierName || 'كاشير';
+
   if (!invoice) {
     return res.status(404).json({ messageAr: 'الفاتورة الأصلية غير موجودة', messageEn: 'Original invoice not found' });
   }
@@ -904,7 +825,7 @@ apiRouter.post('/returns', (req: Request, res: Response) => {
   });
 
   db.save();
-  res.status(201).json({ success: true, return: saleReturn });
+  res.status(201).json({ success: true, return: saleReturn, returnInvoice: saleReturn });
 });
 
 // --- Inventory Ledger & Adjustments ---
@@ -950,28 +871,49 @@ apiRouter.get('/inventory/transactions', (req: Request, res: Response) => {
   res.json(list);
 });
 
-apiRouter.post('/inventory/adjust', (req: Request, res: Response) => {
-  const { productId, branchId, actualQuantity, reason, userId, userName } = req.body;
+apiRouter.post('/inventory/adjust', optionalAuth, (req: Request, res: Response) => {
+  const { productId, branchId, reason } = req.body;
+  const rawQuantity = req.body.actualQuantity ?? req.body.actualStock;
+
+  if (!productId || !branchId || rawQuantity === undefined || rawQuantity === null) {
+    return res.status(400).json({
+      success: false,
+      messageAr: 'المنتج والفرع والكمية الفعلية مطلوبة',
+      messageEn: 'Product, branch and actual quantity are required',
+    });
+  }
+
+  const actualQuantity = Number(rawQuantity);
+  if (isNaN(actualQuantity) || actualQuantity < 0) {
+    return res.status(400).json({
+      success: false,
+      messageAr: 'الكمية الفعلية يجب أن تكون رقماً موجباً أو صفراً',
+      messageEn: 'Actual quantity must be a non-negative number',
+    });
+  }
 
   const currentStock = db.getProductStock(productId, branchId);
-  const diff = Number(actualQuantity) - currentStock;
+  const diff = actualQuantity - currentStock;
+
+  const userId = req.user?.id || req.body.userId || 'usr_admin';
+  const userName = req.user?.nameAr || req.body.userName || 'مسؤول المخزن';
 
   db.setProductStock(
     productId,
     branchId,
-    Number(actualQuantity),
+    actualQuantity,
     'Stock Adjustment',
     'Adjustment',
     `ADJ-${Date.now().toString().slice(-6)}`,
-    userId || 'usr_admin',
-    userName || 'أحمد محمود',
+    userId,
+    userName,
     `تسوية جردية: الفرق ${diff > 0 ? '+' : ''}${diff}. السبب: ${reason || 'جرد دوري'}`
   );
 
   db.logAudit({
-    userId: userId || 'usr_admin',
-    userName: userName || 'أحمد محمود',
-    userRole: 'Inventory Officer',
+    userId,
+    userName,
+    userRole: req.user?.role || 'Inventory Officer',
     action: 'STOCK_ADJUSTED',
     module: 'Inventory',
     recordId: productId,
@@ -979,7 +921,7 @@ apiRouter.post('/inventory/adjust', (req: Request, res: Response) => {
     details: `تسوية جردية للمنتج. الرصيد السابق: ${currentStock}، الرصيد الجديد: ${actualQuantity}`,
   });
 
-  res.json({ success: true, newStock: Number(actualQuantity) });
+  res.json({ success: true, newStock: actualQuantity });
 });
 
 // --- Expenses ---

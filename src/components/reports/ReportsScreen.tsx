@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext.tsx';
+import { apiClient } from '../../services/apiClient.ts';
 import { BarChart3, Download, Printer, Calendar, TrendingUp, DollarSign, Receipt, Percent } from 'lucide-react';
 
 export const ReportsScreen: React.FC = () => {
@@ -10,11 +11,8 @@ export const ReportsScreen: React.FC = () => {
   useEffect(() => {
     if (!branch) return;
     setLoading(true);
-    fetch(`/api/reports/daily?branchId=${branch.id}`)
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
-      })
+    apiClient
+      .get<any>(`/reports/daily?branchId=${branch.id}`)
       .then((data) => setReportData(data))
       .catch((err) => console.error(err))
       .finally(() => setLoading(false));

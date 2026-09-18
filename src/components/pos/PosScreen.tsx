@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useApp } from '../../context/AppContext.tsx';
 import { Product, Category, CartItem, SaleInvoice } from '../../types/index.ts';
+import { apiClient } from '../../services/apiClient.ts';
 import { PaymentModal } from './PaymentModal.tsx';
 import { ThermalReceiptModal } from './ThermalReceiptModal.tsx';
 import { CameraScannerModal } from './CameraScannerModal.tsx';
@@ -22,7 +23,7 @@ import {
 } from 'lucide-react';
 
 export const PosScreen: React.FC = () => {
-  const { branch, activeShift, language, showToast, settings } = useApp();
+  const { branch, activeShift, refreshShift, language, showToast, settings } = useApp();
 
   // Cart State
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -62,22 +63,20 @@ export const PosScreen: React.FC = () => {
 
   // Load Categories & Products
   useEffect(() => {
-    fetch('/api/categories')
-      .then((res) => res.json())
-      .then((data) => setCategories(data))
+    apiClient.get<Category[]>('/categories')
+      .then((data) => setCategories(data || []))
       .catch((err) => console.error(err));
   }, []);
 
   const loadProducts = useCallback(() => {
     if (!branch) return;
     setLoadingProducts(true);
-    const url = `/api/products?branchId=${branch.id}&categoryId=${selectedCategoryId}&search=${encodeURIComponent(
+    const url = `/products?branchId=${branch.id}&categoryId=${selectedCategoryId}&search=${encodeURIComponent(
       searchQuery
     )}`;
-    fetch(url)
-      .then((res) => res.json())
+    apiClient.get<Product[]>(url)
       .then((data: Product[]) => {
-        setProducts(data);
+        setProducts(data || []);
       })
       .catch((err) => console.error(err))
       .finally(() => setLoadingProducts(false));
@@ -178,15 +177,14 @@ export const PosScreen: React.FC = () => {
     if (!code) return;
 
     try {
-      const res = await fetch(`/api/pos/barcode/${encodeURIComponent(code)}?branchId=${branch?.id || 'BR01'}`);
-      const data = await res.json();
+      const data = await apiClient.get<any>(`/pos/barcode/${encodeURIComponent(code)}?branchId=${branch?.id || 'BR01'}`);
 
-      if (res.ok && data.found && data.product) {
+      if (data && data.found && data.product) {
         addToCart(data.product, 1);
         setBarcodeInput('');
       } else {
         showToast(
-          language === 'ar' ? data.messageAr || 'المنتج غير موجود' : data.messageEn || 'Product not found',
+          language === 'ar' ? data?.messageAr || 'المنتج غير موجود' : data?.messageEn || 'Product not found',
           'error'
         );
         setBarcodeInput('');
@@ -707,6 +705,7 @@ export const PosScreen: React.FC = () => {
             setShowPaymentModal(false);
             setShowReceiptModal(true);
             loadProducts(); // refresh stock numbers
+            refreshShift(); // refresh financial metrics of active shift
           }}
         />
       )}
@@ -733,10 +732,9 @@ export const PosScreen: React.FC = () => {
           onScan={(code) => {
             setBarcodeInput(code);
             // Auto submit
-            fetch(`/api/pos/barcode/${encodeURIComponent(code)}?branchId=${branch?.id || 'BR01'}`)
-              .then(async (res) => {
-                const data = await res.json().catch(() => ({ found: false }));
-                if (res.ok && data.found && data.product) {
+            apiClient.get<any>(`/pos/barcode/${encodeURIComponent(code)}?branchId=${branch?.id || 'BR01'}`)
+              .then((data) => {
+                if (data && data.found && data.product) {
                   addToCart(data.product, 1);
                   setBarcodeInput('');
                   showToast(
@@ -746,7 +744,7 @@ export const PosScreen: React.FC = () => {
                     'success'
                   );
                 } else {
-                  showToast(language === 'ar' ? data.messageAr || 'المنتج غير موجود' : data.messageEn || 'Product not found', 'error');
+                  showToast(language === 'ar' ? data?.messageAr || 'المنتج غير موجود' : data?.messageEn || 'Product not found', 'error');
                 }
               })
               .catch(() => {

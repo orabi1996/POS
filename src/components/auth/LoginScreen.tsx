@@ -117,10 +117,13 @@ export const LoginScreen: React.FC = () => {
                 <button
                   key={acc.username}
                   type="button"
-                  onClick={() => {
+                  disabled={loading}
+                  onClick={async () => {
                     setUsername(acc.username);
                     setPassword('123456');
-                    login(acc.username);
+                    setLoading(true);
+                    await login(acc.username, '123456');
+                    setLoading(false);
                   }}
                   className={`text-start px-3 py-1.5 rounded-lg border text-xs font-semibold flex items-center justify-between transition-all hover:scale-[1.01] ${acc.color}`}
                 >

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext.tsx';
 import { CartItem, Customer, SaleInvoice, SalePayment } from '../../types/index.ts';
+import { apiClient, generateOperationId, ApiError } from '../../services/apiClient.ts';
 import {
   Banknote,
   CreditCard,
@@ -52,9 +53,9 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
 
   // Load customers
   useEffect(() => {
-    fetch('/api/customers')
-      .then((res) => res.json())
-      .then((data) => setCustomers(data))
+    apiClient
+      .get<Customer[]>('/customers')
+      .then((data) => setCustomers(data || []))
       .catch((err) => console.error(err));
   }, []);
 
@@ -162,42 +163,42 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
     }
 
     const selectedCust = customers.find((c) => c.id === selectedCustomerId);
+    const clientOperationId = generateOperationId('checkout');
 
     setIsSubmitting(true);
 
     try {
-      const res = await fetch('/api/sales/checkout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          branchId: branch?.id || 'BR01',
-          cashierId: user?.id,
-          cashierName: user?.nameAr,
-          shiftId: activeShift.id,
-          items,
-          payments,
-          discountType,
-          discountValue,
-          customerId: selectedCustomerId,
-          customerName: selectedCust?.name || 'عميل نقدي عام',
-          notes,
-        }),
+      const checkoutPayload = {
+        clientOperationId,
+        branchId: branch?.id || 'BR01',
+        cashierId: user?.id,
+        cashierName: user?.nameAr,
+        shiftId: activeShift.id,
+        items,
+        payments,
+        discountType,
+        discountValue,
+        customerId: selectedCustomerId,
+        customerName: selectedCust?.name || 'عميل نقدي عام',
+        notes,
+      };
+
+      const result = await apiClient.post<any>('/sales/checkout', checkoutPayload, {
+        idempotencyKey: clientOperationId,
       });
 
-      const data = await res.json();
-      if (res.ok) {
-        showToast(
-          language === 'ar'
-            ? `تم إتمام الفاتورة ${data.invoice.invoiceNumber} بنجاح`
-            : `Sale ${data.invoice.invoiceNumber} completed successfully`,
-          'success'
-        );
-        onSuccess(data.invoice);
-      } else {
-        showToast(language === 'ar' ? data.messageAr : data.messageEn, 'error');
-      }
-    } catch (err) {
-      showToast(language === 'ar' ? 'فشل إتمام العملية' : 'Checkout failed', 'error');
+      const invoice: SaleInvoice = result?.invoice || result?.data || result;
+
+      showToast(
+        language === 'ar'
+          ? `تم إتمام الفاتورة ${invoice?.invoiceNumber || ''} بنجاح`
+          : `Sale ${invoice?.invoiceNumber || ''} completed successfully`,
+        'success'
+      );
+      onSuccess(invoice);
+    } catch (err: any) {
+      const msg = err instanceof ApiError ? err.messageAr : (err?.messageAr || err?.message || 'فشل إتمام العملية');
+      showToast(msg, 'error');
     } finally {
       setIsSubmitting(false);
     }

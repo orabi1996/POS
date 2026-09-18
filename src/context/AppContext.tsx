@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User, Branch, Shift, SystemSettings } from '../types/index.ts';
+import { apiClient, authStorage, ApiError } from '../services/apiClient.ts';
 
 interface AppContextType {
   user: User | null;
@@ -11,7 +12,7 @@ interface AppContextType {
   isOnline: boolean;
   loading: boolean;
   toasts: Array<{ id: string; type: 'success' | 'error' | 'info' | 'warning'; message: string }>;
-  login: (username: string, pass?: string) => Promise<boolean>;
+  login: (username: string, password?: string) => Promise<boolean>;
   logout: () => void;
   switchBranch: (branchId: string) => void;
   refreshShift: () => Promise<void>;
@@ -31,7 +32,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [settings, setSettings] = useState<SystemSettings | null>(null);
   const [language, setLanguageState] = useState<'ar' | 'en'>('ar');
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
-  const [loading, setLoading] = useState<boolean>(false);
+  const [loading, setLoading] = useState<boolean>(true);
   const [toasts, setToasts] = useState<Array<{ id: string; type: 'success' | 'error' | 'info' | 'warning'; message: string }>>([]);
 
   const showToast = (message: string, type: 'success' | 'error' | 'info' | 'warning' = 'info') => {
@@ -52,6 +53,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     document.documentElement.dir = lang === 'ar' ? 'rtl' : 'ltr';
   };
 
+  // Listen for expired authentication
+  useEffect(() => {
+    authStorage.onAuthExpired(() => {
+      setUser(null);
+      setActiveShift(null);
+      showToast(
+        language === 'ar'
+          ? 'انتهت صلاحية جلسة العمل، يرجى تسجيل الدخول مجدداً'
+          : 'Session expired. Please log in again.',
+        'warning'
+      );
+    });
+  }, [language]);
+
   // Online / Offline listener
   useEffect(() => {
     const handleOnline = () => {
@@ -70,42 +85,83 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   }, [language]);
 
-  // Load initial settings and branches
+  // Session restoration and initial config
   useEffect(() => {
-    fetch('/api/settings')
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
-      })
-      .then((data) => {
-        setSettings(data);
-        if (data.defaultLanguage) {
-          setLanguage(data.defaultLanguage);
-        }
-      })
-      .catch((err) => console.error('Failed to load settings:', err));
+    authStorage.onAuthExpired(() => {
+      setUser(null);
+      setActiveShift(null);
+      showToast(
+        language === 'ar' ? 'انتهت صلاحية الجلسة، يرجى تسجيل الدخول مجدداً' : 'Session expired. Please sign in again.',
+        'warning'
+      );
+    });
 
-    fetch('/api/branches')
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
-      })
-      .then((data: Branch[]) => {
-        setBranches(data);
-        if (data.length > 0 && !branch) {
-          setBranch(data[0]);
+    const initializeApp = async () => {
+      setLoading(true);
+      try {
+        // Load Settings
+        try {
+          const settingsData = await apiClient.get<SystemSettings>('/settings');
+          setSettings(settingsData);
+          if (settingsData.defaultLanguage) {
+            setLanguage(settingsData.defaultLanguage);
+          }
+        } catch (e) {
+          console.error('Failed to load settings:', e);
         }
-      })
-      .catch((err) => console.error('Failed to load branches:', err));
+
+        // Load Branches
+        let loadedBranches: Branch[] = [];
+        try {
+          loadedBranches = await apiClient.get<Branch[]>('/branches');
+          setBranches(loadedBranches);
+        } catch (e) {
+          console.error('Failed to load branches:', e);
+        }
+
+        // Restore Session if Token exists
+        const token = authStorage.getToken();
+        if (token) {
+          try {
+            const meData = await apiClient.get<{
+              user: User;
+              branch: Branch | null;
+              openShift: Shift | null;
+            }>('/auth/me');
+
+            if (meData?.user) {
+              setUser(meData.user);
+              if (meData.branch) {
+                setBranch(meData.branch);
+              } else if (loadedBranches.length > 0) {
+                const assigned = loadedBranches.find((b) => b.id === meData.user.branchId);
+                setBranch(assigned || loadedBranches[0]);
+              }
+              if (meData.openShift) {
+                setActiveShift(meData.openShift);
+              }
+            }
+          } catch (authErr) {
+            console.warn('Session restoration failed:', authErr);
+            authStorage.clearToken();
+            setUser(null);
+          }
+        }
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    initializeApp();
   }, []);
 
   const refreshShift = async () => {
     if (!user || !branch) return;
     try {
-      const res = await fetch(`/api/shifts/current?cashierId=${user.id}&branchId=${branch.id}`);
-      if (!res.ok) return;
-      const data = await res.json();
-      setActiveShift(data.shift);
+      const data = await apiClient.get<{ shift: Shift | null }>(
+        `/shifts/current?cashierId=${user.id}&branchId=${branch.id}`
+      );
+      setActiveShift(data?.shift || null);
     } catch (err) {
       console.error('Failed to refresh shift:', err);
     }
@@ -115,17 +171,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (user && branch) {
       refreshShift();
     }
-  }, [user, branch]);
+  }, [user?.id, branch?.id]);
 
-  const login = async (username: string): Promise<boolean> => {
+  const login = async (username: string, password: string = '123456'): Promise<boolean> => {
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username }),
-      });
-      const data = await res.json();
-      if (res.ok) {
+      const data = await apiClient.post<{
+        user: User;
+        branch?: Branch;
+        token: string;
+      }>('/auth/login', { username, password });
+
+      if (data?.token && data?.user) {
+        authStorage.setToken(data.token);
         setUser(data.user);
         if (data.branch) {
           setBranch(data.branch);
@@ -137,17 +194,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           'success'
         );
         return true;
-      } else {
-        showToast(language === 'ar' ? data.messageAr : data.messageEn, 'error');
-        return false;
       }
-    } catch (err) {
-      showToast(language === 'ar' ? 'حدث خطأ في الاتصال بالخادم' : 'Connection failed', 'error');
+      return false;
+    } catch (err: any) {
+      const msg = err instanceof ApiError ? err.messageAr : 'حدث خطأ في الاتصال بالخادم';
+      showToast(msg, 'error');
       return false;
     }
   };
 
   const logout = () => {
+    authStorage.clearToken();
     setUser(null);
     setActiveShift(null);
     showToast(language === 'ar' ? 'تم تسجيل الخروج بنجاح' : 'Logged out successfully', 'info');
@@ -168,16 +225,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const updateSettings = async (newSettings: Partial<SystemSettings>) => {
     try {
-      const res = await fetch('/api/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...newSettings, userId: user?.id, userName: user?.nameAr }),
+      const data = await apiClient.put<SystemSettings>('/settings', {
+        ...newSettings,
+        userId: user?.id,
+        userName: user?.nameAr,
       });
-      const data = await res.json();
       setSettings(data);
       showToast(language === 'ar' ? 'تم حفظ الإعدادات بنجاح' : 'Settings saved successfully', 'success');
-    } catch (err) {
-      showToast(language === 'ar' ? 'فشل حفظ الإعدادات' : 'Failed to save settings', 'error');
+    } catch (err: any) {
+      const msg = err instanceof ApiError ? err.messageAr : 'فشل حفظ الإعدادات';
+      showToast(msg, 'error');
     }
   };
 

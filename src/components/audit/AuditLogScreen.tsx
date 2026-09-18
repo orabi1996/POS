@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext.tsx';
 import { AuditLog } from '../../types/index.ts';
+import { apiClient } from '../../services/apiClient.ts';
 import { ShieldAlert, Search, Filter, ShieldCheck, AlertCircle, Clock } from 'lucide-react';
 
 export const AuditLogScreen: React.FC = () => {
@@ -11,9 +12,9 @@ export const AuditLogScreen: React.FC = () => {
 
   useEffect(() => {
     setLoading(true);
-    fetch('/api/audit-logs')
-      .then((res) => res.json())
-      .then((data) => setLogs(data))
+    apiClient
+      .get<AuditLog[]>('/audit-logs')
+      .then((data) => setLogs(data || []))
       .catch((err) => console.error(err))
       .finally(() => setLoading(false));
   }, []);

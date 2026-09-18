@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext.tsx';
+import { apiClient } from '../../services/apiClient.ts';
 import {
   TrendingUp,
   DollarSign,
@@ -44,15 +45,12 @@ export const DashboardScreen: React.FC<{ onNavigate: (screen: any) => void }> = 
   useEffect(() => {
     if (!branch) return;
 
-    fetch(`/api/reports/daily?branchId=${branch.id}`)
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
-      })
+    apiClient
+      .get<any>(`/reports/daily?branchId=${branch.id}`)
       .then((data) => {
-        setMetrics(data.metrics || {});
-        setSalesTrend(data.hourlySales || []);
-        setTopProducts(data.topProducts || []);
+        setMetrics(data?.metrics || {});
+        setSalesTrend(data?.hourlySales || []);
+        setTopProducts(data?.topProducts || []);
       })
       .catch((err) => console.error(err));
   }, [branch]);

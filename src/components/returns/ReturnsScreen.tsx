@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext.tsx';
 import { SaleInvoice, CartItem } from '../../types/index.ts';
+import { apiClient, ApiError } from '../../services/apiClient.ts';
 import { RotateCcw, Search, CheckCircle2, AlertCircle, Banknote, ShieldCheck } from 'lucide-react';
 
 interface ReturnItemState {
@@ -27,9 +28,10 @@ export const ReturnsScreen: React.FC = () => {
     if (!invoiceQuery.trim()) return;
 
     try {
-      const res = await fetch(`/api/sales?branchId=${branch?.id || 'BR01'}&search=${encodeURIComponent(invoiceQuery.trim())}`);
-      const data: SaleInvoice[] = await res.json();
-      const match = data.find((inv) => inv.invoiceNumber.toLowerCase() === invoiceQuery.trim().toLowerCase());
+      const data = await apiClient.get<SaleInvoice[]>(
+        `/sales?branchId=${branch?.id || 'BR01'}&search=${encodeURIComponent(invoiceQuery.trim())}`
+      );
+      const match = (data || []).find((inv) => inv.invoiceNumber.toLowerCase() === invoiceQuery.trim().toLowerCase());
 
       if (match) {
         if (match.status === 'cancelled') {
@@ -93,46 +95,39 @@ export const ReturnsScreen: React.FC = () => {
 
     setSubmitting(true);
     try {
-      const res = await fetch('/api/returns', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          originalInvoiceId: foundInvoice.id,
-          originalInvoiceNumber: foundInvoice.invoiceNumber,
-          branchId: branch.id,
-          cashierId: user.id,
-          cashierName: user.nameAr,
-          shiftId: activeShift.id,
-          items: selectedToReturn.map((it) => ({
-            productId: it.productId,
-            productNameAr: it.productNameAr,
-            quantity: it.returnQty,
-            unitPrice: it.unitPrice,
-            refundAmount: it.returnQty * it.unitPrice,
-            restock,
-          })),
-          totalRefund: totalRefundAmount,
-          refundMethod,
-          reason: returnReason,
-        }),
+      const data = await apiClient.post<any>('/returns', {
+        originalInvoiceId: foundInvoice.id,
+        originalInvoiceNumber: foundInvoice.invoiceNumber,
+        branchId: branch.id,
+        cashierId: user.id,
+        cashierName: user.nameAr,
+        shiftId: activeShift.id,
+        items: selectedToReturn.map((it) => ({
+          productId: it.productId,
+          productNameAr: it.productNameAr,
+          quantity: it.returnQty,
+          unitPrice: it.unitPrice,
+          refundAmount: it.returnQty * it.unitPrice,
+          restock,
+        })),
+        totalRefund: totalRefundAmount,
+        refundMethod,
+        reason: returnReason,
       });
 
-      const data = await res.json();
-      if (res.ok) {
-        showToast(
-          language === 'ar'
-            ? `تم تسجيل مرتجع المبيعات بنجاح برقم: ${data.returnInvoice.returnNumber}`
-            : 'Return recorded successfully',
-          'success'
-        );
-        setFoundInvoice(null);
-        setInvoiceQuery('');
-        setReturnItems([]);
-      } else {
-        showToast(data.messageAr || 'حدث خطأ', 'error');
-      }
-    } catch (err) {
-      showToast('Error processing return', 'error');
+      const retNum = data?.returnInvoice?.returnNumber || data?.return?.returnNumber || '';
+      showToast(
+        language === 'ar'
+          ? `تم تسجيل مرتجع المبيعات بنجاح ${retNum ? `برقم: ${retNum}` : ''}`
+          : 'Return recorded successfully',
+        'success'
+      );
+      setFoundInvoice(null);
+      setInvoiceQuery('');
+      setReturnItems([]);
+    } catch (err: any) {
+      const msg = err instanceof ApiError ? err.messageAr : 'حدث خطأ أثناء معالجة المرتجع';
+      showToast(msg, 'error');
     } finally {
       setSubmitting(false);
     }

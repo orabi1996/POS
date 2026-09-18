@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext.tsx';
 import { Product, Category } from '../../types/index.ts';
+import { apiClient, ApiError } from '../../services/apiClient.ts';
 import {
   Package,
   Plus,
@@ -46,17 +47,17 @@ export const ProductsScreen: React.FC = () => {
   const loadData = () => {
     if (!branch) return;
     setLoading(true);
-    fetch(`/api/products?branchId=${branch.id}&search=${encodeURIComponent(search)}&categoryId=${selectedCategory}&lowStock=${lowStockOnly}`)
-      .then((res) => res.json())
-      .then((data) => setProducts(data))
+    apiClient
+      .get<Product[]>(`/products?branchId=${branch.id}&search=${encodeURIComponent(search)}&categoryId=${selectedCategory}&lowStock=${lowStockOnly}`)
+      .then((data) => setProducts(data || []))
       .catch((err) => console.error(err))
       .finally(() => setLoading(false));
 
-    fetch('/api/categories')
-      .then((res) => res.json())
+    apiClient
+      .get<Category[]>('/categories')
       .then((cats: Category[]) => {
-        setCategories(cats);
-        if (cats.length > 0 && !categoryId) setCategoryId(cats[0].id);
+        setCategories(cats || []);
+        if (cats && cats.length > 0 && !categoryId) setCategoryId(cats[0].id);
       })
       .catch((err) => console.error(err));
   };
@@ -109,46 +110,38 @@ export const ProductsScreen: React.FC = () => {
     }
 
     try {
-      const res = await fetch('/api/products', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: editingProduct?.id,
-          sku,
-          nameAr,
-          nameEn,
-          barcode,
-          categoryId,
-          unit,
-          purchasePrice,
-          sellingPrice,
-          taxRate,
-          minStock,
-          initialStock,
-          trackStock,
-          branchId: branch?.id || 'BR01',
-          userId: user?.id,
-          userName: user?.nameAr,
-        }),
+      await apiClient.post('/products', {
+        id: editingProduct?.id,
+        sku,
+        nameAr,
+        nameEn,
+        barcode,
+        categoryId,
+        unit,
+        purchasePrice,
+        sellingPrice,
+        taxRate,
+        minStock,
+        initialStock,
+        trackStock,
+        branchId: branch?.id || 'BR01',
+        userId: user?.id,
+        userName: user?.nameAr,
       });
 
-      const data = await res.json();
-      if (res.ok) {
-        showToast(
-          language === 'ar'
-            ? editingProduct
-              ? 'تم تعديل المنتج بنجاح'
-              : 'تمت إضافة المنتج بنجاح'
-            : 'Product saved successfully',
-          'success'
-        );
-        setShowModal(false);
-        loadData();
-      } else {
-        showToast(language === 'ar' ? data.messageAr : data.messageEn, 'error');
-      }
-    } catch (err) {
-      showToast(language === 'ar' ? 'فشل حفظ المنتج' : 'Failed to save product', 'error');
+      showToast(
+        language === 'ar'
+          ? editingProduct
+            ? 'تم تعديل المنتج بنجاح'
+            : 'تمت إضافة المنتج بنجاح'
+          : 'Product saved successfully',
+        'success'
+      );
+      setShowModal(false);
+      loadData();
+    } catch (err: any) {
+      const msg = err instanceof ApiError ? err.messageAr : (language === 'ar' ? 'فشل حفظ المنتج' : 'Failed to save product');
+      showToast(msg, 'error');
     }
   };
 

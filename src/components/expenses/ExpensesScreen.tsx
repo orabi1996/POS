@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext.tsx';
 import { Expense } from '../../types/index.ts';
+import { apiClient, ApiError } from '../../services/apiClient.ts';
 import { Wallet, Plus, Calendar, X } from 'lucide-react';
 
 export const ExpensesScreen: React.FC = () => {
-  const { branch, user, activeShift, language, showToast } = useApp();
+  const { branch, user, activeShift, refreshShift, language, showToast } = useApp();
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [showModal, setShowModal] = useState<boolean>(false);
 
@@ -15,9 +16,9 @@ export const ExpensesScreen: React.FC = () => {
 
   const loadExpenses = () => {
     if (!branch) return;
-    fetch(`/api/expenses?branchId=${branch.id}`)
-      .then((res) => res.json())
-      .then((data) => setExpenses(data))
+    apiClient
+      .get<Expense[]>(`/expenses?branchId=${branch.id}`)
+      .then((data) => setExpenses(data || []))
       .catch((err) => console.error(err));
   };
 
@@ -30,32 +31,27 @@ export const ExpensesScreen: React.FC = () => {
     if (!branch || !user || amount <= 0) return;
 
     try {
-      const res = await fetch('/api/expenses', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          branchId: branch.id,
-          category,
-          amount: Number(amount),
-          source,
-          description: description || category,
-          shiftId: source === 'register' ? activeShift?.id : undefined,
-          userId: user.id,
-          userName: user.nameAr,
-        }),
+      await apiClient.post('/expenses', {
+        branchId: branch.id,
+        category,
+        amount: Number(amount),
+        source,
+        description: description || category,
+        shiftId: source === 'register' ? activeShift?.id : undefined,
+        userId: user.id,
+        userName: user.nameAr,
       });
 
-      const data = await res.json();
-      if (res.ok) {
-        showToast(language === 'ar' ? 'تم تسجيل المصروف بنجاح' : 'Expense recorded', 'success');
-        setShowModal(false);
-        setDescription('');
-        loadExpenses();
-      } else {
-        showToast(data.messageAr || 'حدث خطأ', 'error');
+      showToast(language === 'ar' ? 'تم تسجيل المصروف بنجاح' : 'Expense recorded', 'success');
+      setShowModal(false);
+      setDescription('');
+      loadExpenses();
+      if (source === 'register') {
+        refreshShift();
       }
-    } catch (err) {
-      showToast('Error recording expense', 'error');
+    } catch (err: any) {
+      const msg = err instanceof ApiError ? err.messageAr : 'حدث خطأ في تسجيل المصروف';
+      showToast(msg, 'error');
     }
   };
 

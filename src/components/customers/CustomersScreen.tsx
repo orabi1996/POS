@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext.tsx';
 import { Customer, Supplier } from '../../types/index.ts';
+import { apiClient, ApiError } from '../../services/apiClient.ts';
 import { Users, Plus, Phone, MapPin, Award, Truck, X } from 'lucide-react';
 
 export const CustomersScreen: React.FC = () => {
@@ -16,14 +17,14 @@ export const CustomersScreen: React.FC = () => {
   const [address, setAddress] = useState<string>('');
 
   const loadData = () => {
-    fetch('/api/customers')
-      .then((res) => res.json())
-      .then((data) => setCustomers(data))
+    apiClient
+      .get<Customer[]>('/customers')
+      .then((data) => setCustomers(data || []))
       .catch((err) => console.error(err));
 
-    fetch('/api/suppliers')
-      .then((res) => res.json())
-      .then((data) => setSuppliers(data))
+    apiClient
+      .get<Supplier[]>('/suppliers')
+      .then((data) => setSuppliers(data || []))
       .catch((err) => console.error(err));
   };
 
@@ -36,32 +37,27 @@ export const CustomersScreen: React.FC = () => {
     if (!name || !phone) return;
 
     try {
-      const endpoint = tab === 'customers' ? '/api/customers' : '/api/suppliers';
+      const endpoint = tab === 'customers' ? '/customers' : '/suppliers';
       const body = tab === 'customers' ? { name, phone, address } : { name, companyName: name, phone, address };
 
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      await apiClient.post(endpoint, body);
 
-      if (res.ok) {
-        showToast(
-          language === 'ar'
-            ? tab === 'customers'
-              ? 'تمت إضافة العميل بنجاح'
-              : 'تمت إضافة المورد بنجاح'
-            : 'Saved successfully',
-          'success'
-        );
-        setShowModal(false);
-        setName('');
-        setPhone('');
-        setAddress('');
-        loadData();
-      }
-    } catch (err) {
-      showToast('Error saving data', 'error');
+      showToast(
+        language === 'ar'
+          ? tab === 'customers'
+            ? 'تمت إضافة العميل بنجاح'
+            : 'تمت إضافة المورد بنجاح'
+          : 'Saved successfully',
+        'success'
+      );
+      setShowModal(false);
+      setName('');
+      setPhone('');
+      setAddress('');
+      loadData();
+    } catch (err: any) {
+      const msg = err instanceof ApiError ? err.messageAr : 'حدث خطأ أثناء حفظ البيانات';
+      showToast(msg, 'error');
     }
   };
 

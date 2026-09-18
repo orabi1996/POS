@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext.tsx';
 import { Register, Shift } from '../../types/index.ts';
+import { apiClient, ApiError } from '../../services/apiClient.ts';
 import { Clock, Banknote, AlertTriangle, CheckCircle, X, ShieldAlert } from 'lucide-react';
 
 interface ShiftModalProps {
@@ -20,11 +21,10 @@ export const ShiftModal: React.FC<ShiftModalProps> = ({ onClose }) => {
 
   useEffect(() => {
     if (branch) {
-      fetch(`/api/registers?branchId=${branch.id}`)
-        .then((res) => res.json())
+      apiClient.get<Register[]>(`/registers?branchId=${branch.id}`)
         .then((data) => {
-          setRegisters(data);
-          if (data.length > 0) setSelectedRegisterId(data[0].id);
+          setRegisters(data || []);
+          if (data && data.length > 0) setSelectedRegisterId(data[0].id);
         })
         .catch((err) => console.error(err));
     }
@@ -48,29 +48,22 @@ export const ShiftModal: React.FC<ShiftModalProps> = ({ onClose }) => {
     setLoading(true);
     try {
       const selectedReg = registers.find((r) => r.id === selectedRegisterId);
-      const res = await fetch('/api/shifts/open', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          cashierId: user.id,
-          cashierName: user.nameAr,
-          branchId: branch.id,
-          branchName: branch.nameAr,
-          registerId: selectedRegisterId,
-          registerName: selectedReg ? selectedReg.name : 'كاشير 1',
-          openingCash: Number(openingCash) || 0,
-        }),
+      await apiClient.post('/shifts/open', {
+        cashierId: user.id,
+        cashierName: user.nameAr,
+        branchId: branch.id,
+        branchName: branch.nameAr,
+        registerId: selectedRegisterId,
+        registerName: selectedReg ? selectedReg.name : 'كاشير 1',
+        openingCash: Number(openingCash) || 0,
       });
-      const data = await res.json();
-      if (res.ok) {
-        showToast(language === 'ar' ? 'تم فتح الوردية بنجاح' : 'Shift opened successfully', 'success');
-        await refreshShift();
-        onClose();
-      } else {
-        showToast(language === 'ar' ? data.messageAr : data.messageEn, 'error');
-      }
-    } catch (err) {
-      showToast(language === 'ar' ? 'حدث خطأ في فتح الوردية' : 'Failed to open shift', 'error');
+
+      showToast(language === 'ar' ? 'تم فتح الوردية بنجاح' : 'Shift opened successfully', 'success');
+      await refreshShift();
+      onClose();
+    } catch (err: any) {
+      const msg = err instanceof ApiError ? err.messageAr : 'حدث خطأ في فتح الوردية';
+      showToast(msg, 'error');
     } finally {
       setLoading(false);
     }
@@ -80,27 +73,20 @@ export const ShiftModal: React.FC<ShiftModalProps> = ({ onClose }) => {
     if (!activeShift) return;
     setLoading(true);
     try {
-      const res = await fetch('/api/shifts/close', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          shiftId: activeShift.id,
-          actualCash: Number(actualCash) || 0,
-          notes,
-          userId: user?.id,
-          userName: user?.nameAr,
-        }),
+      await apiClient.post('/shifts/close', {
+        shiftId: activeShift.id,
+        actualCash: Number(actualCash) || 0,
+        notes,
+        userId: user?.id,
+        userName: user?.nameAr,
       });
-      const data = await res.json();
-      if (res.ok) {
-        showToast(language === 'ar' ? 'تم إغلاق الوردية وترحيل الخزينة بنجاح' : 'Shift closed successfully', 'success');
-        await refreshShift();
-        onClose();
-      } else {
-        showToast(language === 'ar' ? data.messageAr : data.messageEn, 'error');
-      }
-    } catch (err) {
-      showToast(language === 'ar' ? 'فشل إغلاق الوردية' : 'Failed to close shift', 'error');
+
+      showToast(language === 'ar' ? 'تم إغلاق الوردية وترحيل الخزينة بنجاح' : 'Shift closed successfully', 'success');
+      await refreshShift();
+      onClose();
+    } catch (err: any) {
+      const msg = err instanceof ApiError ? err.messageAr : 'فشل إغلاق الوردية';
+      showToast(msg, 'error');
     } finally {
       setLoading(false);
     }
