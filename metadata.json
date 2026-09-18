@@ -1,0 +1,6 @@
+{
+  "name": "Smart Market POS",
+  "description": "نظام متكامل لإدارة سوبر ماركت ونقاط البيع POS والمخزون والفواتير وطباعة الإيصالات والورديات باللغتين العربية والإنجليزية.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
